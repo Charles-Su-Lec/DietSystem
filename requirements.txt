@@ -1,0 +1,5 @@
+streamlit
+paddlepaddle
+paddleocr
+opencv-python
+pandas
