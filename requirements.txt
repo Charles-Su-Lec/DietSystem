@@ -1,5 +1,5 @@
 streamlit==1.32.0
-paddlepaddle==2.6.2
+paddlepaddle>=2.6.2
 paddleocr==2.7.0.0
 opencv-python==4.6.0.66
-pandas==1.5.3
+pandas==2.0.3
