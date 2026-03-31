@@ -1,113 +1,239 @@
 import streamlit as st
-import os
+import easyocr
+import numpy as np
+import pandas as pd
+import re
 import tempfile
-from image_test import HealthReportParser, df_ind, df_rec
+import os
+from PIL import Image
 
-# ========== 缓存 Parser 实例（核心：避免重复初始化PaddleOCR） ==========
+# ========== 1. 初始化 EasyOCR（轻量、无依赖冲突） ==========
 @st.cache_resource(ttl=None)  # 永久缓存，仅初始化一次
-def get_parser():
-    """获取全局唯一的体检报告解析器实例"""
-    return HealthReportParser(use_gpu=False)
+def init_ocr():
+    return easyocr.Reader(['ch_sim', 'en'], gpu=False)  # 中英文识别，CPU模式
 
-# ========== Streamlit 主界面 ==========
-st.title("体检报告健康分析系统")
-st.subheader("上传体检报告图片，自动解析健康指标并生成饮食建议")
+reader = init_ocr()
+
+# ========== 2. 健康分析数据（完全保留你的逻辑） ==========
+data_ind = [
+    ["空腹血糖", 3.9, 6.1, "高血糖", "低血糖", "苦瓜、燕麦、芹菜、柚子", "精制糖、奶茶、蛋糕、白面包"],
+    ["甘油三酯", 0.56, 1.7, "高血脂", "低血脂", "深海鱼、燕麦、木耳、牛油果", "肥肉、动物内脏、油炸食品、酒"],
+    ["尿酸", 150, 416, "高尿酸", "低尿酸", "冬瓜、柠檬、芹菜、鸡蛋", "海鲜、动物内脏、啤酒、浓汤、火锅"],
+    ["收缩压", 90, 120, "高血压", "低血压", "芹菜、菠菜、香蕉、酸奶", "咸菜、腌肉、加工肉、高盐零食"],
+    ["舒张压", 60, 80, "高血压", "低血压", "芹菜、菠菜、香蕉、酸奶", "咸菜、腌肉、加工肉、高盐零食"],
+    ["BMI", 18.5, 24, "肥胖", "消瘦", "蔬菜、粗粮、鸡胸肉、鸡蛋", "油炸食品、奶茶、蛋糕、肥肉"]
+]
+df_ind = pd.DataFrame(
+    data_ind,
+    columns=["indicator", "normal_min", "normal_max", "high_risk", "low_risk", "recommend_food", "avoid_food"]
+)
+
+data_rec = [
+    ["苦瓜降糖汤", "苦瓜、排骨、姜片", "每日一次，佐餐食用", "高血糖"],
+    ["木耳降脂粥", "木耳、大米、红枣", "早晚食用", "高血脂"],
+    ["冬瓜利尿汤", "冬瓜、海带、瘦肉", "每周3次", "高尿酸"],
+    ["芹菜降压沙拉", "芹菜、酸奶、香蕉", "每日早餐", "高血压"],
+    ["鸡胸蔬菜沙拉", "鸡胸肉、生菜、番茄", "每日晚餐", "肥胖"]
+]
+df_rec = pd.DataFrame(
+    data_rec,
+    columns=["recipe_name", "material", "usage", "fit_condition"]
+)
+
+# ========== 3. OCR 指标提取（保留你的正则表达式） ==========
+def extract_health_metrics(image):
+    """从图片中提取健康指标（输入为PIL Image）"""
+    # 转numpy格式给EasyOCR
+    img_np = np.array(image)
+    # 提取所有文本
+    full_text = ' '.join(reader.readtext(img_np, detail=0))
+
+    # 指标提取的正则表达式（完全保留你的逻辑）
+    patterns = {
+        '空腹血糖': r'(?:空腹血糖|血糖)\s*[：:]\s*(\d+(?:\.\d+)?)\s*(?:mmol/L|mmol)?',
+        '甘油三酯': r'(?:甘油三酯|TG)\s*[：:]\s*(\d+(?:\.\d+)?)',
+        '尿酸': r'尿酸\s*[：:]\s*(\d+(?:\.\d+)?)\s*(?:μmol/L|umol/L)?',
+        '收缩压': r'(?:收缩压|高压)\s*[：:]\s*(\d+)',
+        '舒张压': r'(?:舒张压|低压)\s*[：:]\s*(\d+)',
+        'BMI': r'(?:BMI|体质指数)\s*[：:]\s*(\d+(?:\.\d+)?)',
+        '身高': r'身高\s*[：:]\s*(\d+(?:\.\d+)?)\s*(?:cm|厘米|CM)?',
+        '体重': r'体重\s*[：:]\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|KG)?',
+    }
+    bp_pattern = r'血压\s*[：:]\s*(\d+)\s*[/\/]\s*(\d+)'
+
+    metrics = {}
+    # 提取所有模式匹配的指标
+    for key, pattern in patterns.items():
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            metrics[key] = float(match.group(1))
+
+    # 处理血压组合（优先使用组合形式）
+    bp_match = re.search(bp_pattern, full_text, re.IGNORECASE)
+    if bp_match:
+        metrics['收缩压'] = int(bp_match.group(1))
+        metrics['舒张压'] = int(bp_match.group(2))
+
+    # 自动计算 BMI
+    if 'BMI' not in metrics and '身高' in metrics and '体重' in metrics:
+        height_m = metrics['身高'] / 100.0
+        weight_kg = metrics['体重']
+        bmi = weight_kg / (height_m ** 2)
+        metrics['BMI'] = round(bmi, 1)
+
+    # 返回最终需要的6项指标
+    return {
+        "空腹血糖": metrics.get("空腹血糖", None),
+        "甘油三酯": metrics.get("甘油三酯", None),
+        "尿酸": metrics.get("尿酸", None),
+        "收缩压": metrics.get("收缩压", None),
+        "舒张压": metrics.get("舒张压", None),
+        "BMI": metrics.get("BMI", None),
+    }
+
+# ========== 4. Streamlit 主界面 ==========
+st.set_page_config(page_title="体检报告健康分析系统", page_icon="🏥", layout="wide")
+st.title("🏥 体检报告健康分析系统")
+st.divider()
 
 # 上传图片
-uploaded_file = st.file_uploader("选择体检报告图片", type=["jpg", "png", "jpeg"])
+st.subheader("上传体检报告图片")
+uploaded_file = st.file_uploader(
+    "支持 JPG/PNG/JPEG 格式",
+    type=["jpg", "png", "jpeg"],
+    help="请上传清晰的体检报告指标页图片"
+)
 
-if uploaded_file is not None:
-    # 保存上传的图片到临时文件（避免路径问题）
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-        tmp_file.write(uploaded_file.getbuffer())
-        tmp_image_path = tmp_file.name
+if not uploaded_file:
+    st.info(" 请先上传体检报告图片，系统将自动识别健康指标")
+else:
+    # 显示上传的图片
+    image = Image.open(uploaded_file)
+    st.image(image, caption="上传的体检报告", width=400)
 
-    try:
-        # 获取缓存的Parser实例（仅第一次调用时初始化）
-        parser = get_parser()
-        
-        # 解析图片提取指标
-        st.info("正在解析图片中的健康指标...")
-        metrics = parser.extract_health_metrics(tmp_image_path)
-        
-        # 显示解析结果
-        st.success("指标解析完成！")
-        st.subheader("识别的健康指标")
-        for key, val in metrics.items():
+    # OCR 识别指标
+    st.subheader(" 图片识别结果")
+    with st.spinner("正在识别图片中的健康指标..."):
+        try:
+            metrics = extract_health_metrics(image)
+            st.success("图片识别完成！")
+        except Exception as e:
+            st.error(f"识别失败：{str(e)}")
+            st.stop()
+
+    # 指标确认/修改
+    st.subheader("确认/修改健康指标")
+    st.caption("未识别到的指标请手动输入，已识别的可直接回车保留")
+    
+    col1, col2 = st.columns(2)
+    data = {}
+
+    with col1:
+        for key in ["空腹血糖", "甘油三酯", "尿酸"]:
+            val = metrics.get(key)
             if val is not None:
-                st.write(f"• {key}：{val}")
+                user_input = st.text_input(f"{key} (mmol/L)", value=str(val))
             else:
-                st.write(f"• {key}：未识别到")
+                user_input = st.text_input(f"{key} (mmol/L)", placeholder="未识别，请输入数值")
+            
+            if user_input.strip():
+                try:
+                    data[key] = float(user_input)
+                except ValueError:
+                    st.warning(f"{key} 输入无效，将跳过该指标")
 
-        # 健康分析逻辑（复用image_test.py中的分析逻辑）
+    with col2:
+        for key in ["收缩压", "舒张压", "BMI"]:
+            val = metrics.get(key)
+            unit = "mmHg" if "压" in key else ""
+            if val is not None:
+                user_input = st.text_input(f"{key} ({unit})", value=str(val))
+            else:
+                user_input = st.text_input(f"{key} ({unit})", placeholder="未识别，请输入数值")
+            
+            if user_input.strip():
+                try:
+                    data[key] = float(user_input)
+                except ValueError:
+                    st.warning(f"{key} 输入无效，将跳过该指标")
+
+    if not data:
+        st.warning("无有效指标数据，请至少填写一项")
+    else:
+        # 健康分析
+        st.divider()
+        st.subheader("健康风险分析")
+        
         abnormal = []
         recommend_food = []
         avoid_food = []
         matched_recipes = []
 
-        # 过滤有效指标
-        valid_metrics = {k: v for k, v in metrics.items() if v is not None}
-        if not valid_metrics:
-            st.warning("未识别到任何有效指标，无法分析")
+        # 指标异常判断
+        for ind, val in data.items():
+            row = df_ind[df_ind["indicator"] == ind]
+            if row.empty:
+                continue
+            row = row.iloc[0]
+            min_val = float(row["normal_min"])
+            max_val = float(row["normal_max"])
+
+            if val > max_val:
+                abnormal.append(f"{ind} 偏高：{row['high_risk']}")
+                recommend_food.extend(row["recommend_food"].split("、"))
+                avoid_food.extend(row["avoid_food"].split("、"))
+            elif val < min_val:
+                abnormal.append(f"{ind} 偏低：{row['low_risk']}")
+                recommend_food.extend(row["recommend_food"].split("、"))
+                avoid_food.extend(row["avoid_food"].split("、"))
+
+        # 去重
+        recommend_food = list(set(recommend_food))
+        avoid_food = list(set(avoid_food))
+
+        # 匹配药膳方案
+        for risk in abnormal:
+            keyword = risk.split("：")[-1]
+            recipes = df_rec[df_rec["fit_condition"] == keyword]
+            for _, r in recipes.iterrows():
+                matched_recipes.append({
+                    "name": r["recipe_name"],
+                    "material": r["material"],
+                    "usage": r["usage"]
+                })
+
+        # 展示分析结果
+        if not abnormal:
+            st.success("所有指标均在正常范围，继续保持健康生活！")
         else:
-            # 分析指标是否异常
-            for ind, val in valid_metrics.items():
-                row = df_ind[df_ind["indicator"] == ind]
-                if not row.empty:
-                    row = row.iloc[0]
-                    min_val = float(row["normal_min"])
-                    max_val = float(row["normal_max"])
-                    
-                    if val > max_val:
-                        abnormal.append(f"{ind} 偏高（{val}）：{row['high_risk']}")
-                        recommend_food.extend(row["recommend_food"].split("、"))
-                        avoid_food.extend(row["avoid_food"].split("、"))
-                    elif val < min_val:
-                        abnormal.append(f"{ind} 偏低（{val}）：{row['low_risk']}")
-                        recommend_food.extend(row["recommend_food"].split("、"))
-                        avoid_food.extend(row["avoid_food"].split("、"))
+            st.warning(" 发现异常指标：")
+            for a in abnormal:
+                st.markdown(f"- {a}")
 
-            # 去重食材列表
-            recommend_food = list(set(recommend_food))
-            avoid_food = list(set(avoid_food))
-
-            # 匹配药膳方案
-            for risk in abnormal:
-                keyword = risk.split("：")[-1]
-                recipes = df_rec[df_rec["fit_condition"] == keyword]
-                for _, r in recipes.iterrows():
-                    matched_recipes.append({
-                        "name": r["recipe_name"],
-                        "material": r["material"],
-                        "usage": r["usage"]
-                    })
-
-            # 显示分析结果
-            st.subheader("健康风险分析")
-            if not abnormal:
-                st.success("🎉 所有指标均在正常范围，继续保持健康生活！")
+        # 饮食建议
+        st.subheader("饮食建议")
+        col_food1, col_food2 = st.columns(2)
+        with col_food1:
+            st.markdown("**推荐食材**")
+            if recommend_food:
+                st.write("、".join(recommend_food))
             else:
-                for a in abnormal:
-                    st.warning(f"• {a}")
-
-            st.subheader("推荐食材")
-            st.write("、".join(recommend_food) if recommend_food else "无特殊推荐")
-
-            st.subheader("禁忌食材")
-            st.write("、".join(avoid_food) if avoid_food else "无特殊禁忌")
-
-            st.subheader("个性化药膳方案")
-            if matched_recipes:
-                for i, r in enumerate(matched_recipes[:3], 1):
-                    st.write(f"{i}. **{r['name']}**")
-                    st.write(f"   材料：{r['material']}")
-                    st.write(f"   食用建议：{r['usage']}")
+                st.write("无特殊推荐食材")
+        with col_food2:
+            st.markdown("**禁忌食材**")
+            if avoid_food:
+                st.write("、".join(avoid_food))
             else:
-                st.info("暂无匹配的药膳方案")
+                st.write("无特殊禁忌食材")
 
-    except Exception as e:
-        st.error(f"解析失败：{str(e)}")
-    finally:
-        # 清理临时文件
-        if os.path.exists(tmp_image_path):
-            os.remove(tmp_image_path)
+        # 药膳方案
+        st.subheader("个性化药膳方案")
+        if matched_recipes:
+            for i, r in enumerate(matched_recipes[:3], 1):
+                st.markdown(f"""
+                **{i}. {r['name']}**  
+                - 材料：{r['material']}  
+                - 食用建议：{r['usage']}
+                """)
+        else:
+            st.info("暂无匹配的药膳方案")
