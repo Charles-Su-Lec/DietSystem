@@ -1,5 +1,9 @@
-streamlit==1.32.0
-paddlepaddle>=2.6.2
-paddleocr==2.7.0.0
-opencv-python==4.6.0.66
-pandas==2.0.3
+# requirements.txt
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+paddleocr>=2.7.0
+paddlepaddle>=2.5.0
+regex>=2023.10.3
+Pillow>=10.0.0
