@@ -13,10 +13,9 @@ def install_opencv_deps():
                 ["apt-get", "install", "-y", "libgl1-mesa-glx", "libglib2.0-0"],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-     print(f": {e}")
-
-    finally:
-        print("")
+            print("✅ OpenCV 系统依赖安装完成")
+    except Exception as e:
+        print(f"⚠️ 系统依赖安装警告（不影响本地运行）：{e}")
     install_opencv_deps()
 
 # ========== 第二步：核心库导入 ==========
