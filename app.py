@@ -13,9 +13,11 @@ def install_opencv_deps():
                 ["apt-get", "install", "-y", "libgl1-mesa-glx", "libglib2.0-0"],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
+     print(f": {e}")
 
-# 先装依赖再导入cv2
-install_opencv_deps()
+    finally:
+        print("")
+    install_opencv_deps()
 
 # ========== 第二步：核心库导入 ==========
 import pandas as pd
